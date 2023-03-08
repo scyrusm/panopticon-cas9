@@ -26,6 +26,7 @@ def predict_guide_status_from_grna_counts(counts,
                                           nguide_threshold_for_cell=0,
                                           ncell_threshold_for_guide=10):
     from pomegranate import GeneralMixtureModel, PoissonDistribution
+    np.seterr(divide='ignore')
     logcounts = np.log(counts) / np.log(2)
     if (~np.isfinite(logcounts)).sum() > 0:
         cellmask = np.isfinite(logcounts)
@@ -52,8 +53,9 @@ def predict_guide_status_from_grna_counts(counts,
     else:
         predictions = [0] * len(counts)
     predictions = np.array(predictions)
-    if counts[predictions == 0].mean() > counts[predictions == 1].mean():
-        predictions = 1 - predictions
+    if predictions.sum() > 0:
+        if counts[predictions == 0].mean() > counts[predictions == 1].mean():
+            predictions = 1 - predictions
     predictions = np.nan_to_num(predictions, nan=0.0)
     threshold_for_cell_mask = counts >= nguide_threshold_for_cell
     predictions *= threshold_for_cell_mask
@@ -62,25 +64,37 @@ def predict_guide_status_from_grna_counts(counts,
 
 def generate_crispr_grna_predictions(adata,
                                      write_to_obsm=True,
-                                     write_to_obs=False):
+                                     write_to_obs=False,
+                                     obsm_key='CRISPR Guide Capture'):
     from panopticrispr.utilities import predict_guide_status_from_grna_counts
     from tqdm import tqdm
     if (not write_to_obs) and (not write_to_obsm):
         raise Exception("One of write_to_obs or write_to_obsm must be True")
     dfs = []
-    for iguide, guide in enumerate(
-            tqdm(adata.uns['CRISPR Guide Capture_metadata'].index.values)):
-        predictions = predict_guide_status_from_grna_counts(
-            np.array(adata.obsm['CRISPR Guide Capture'][:,
-                                                        iguide].todense())[:,
-                                                                           0])
+    if type(adata.obsm[obsm_key]) == pd.core.frame.DataFrame:
+        for col, series in tqdm(adata.obsm[obsm_key].items(),
+                                total=adata.obsm[obsm_key].shape[1]):
+            predictions = predict_guide_status_from_grna_counts(series.values)
 
-        if predictions.sum() > 0:
-            dfs.append(
-                pd.DataFrame(predictions,
-                             columns=[guide],
-                             index=adata.obs.index))
-            if write_to_obs:
-                adata.obs[guide + '_prediction'] = predictions
+            if predictions.sum() > 0:
+                dfs.append(
+                    pd.DataFrame(predictions,
+                                 columns=[col],
+                                 index=adata.obs.index))
+                if write_to_obs:
+                    adata.obs[guide + '_prediction'] = predictions
+    else:
+        for iguide, guide in enumerate(
+                tqdm(adata.uns[obsm_key + '_metadata'].index.values)):
+            predictions = predict_guide_status_from_grna_counts(
+                np.array(adata.obsm[obsm_key][:, iguide].todense())[:, 0])
+
+            if predictions.sum() > 0:
+                dfs.append(
+                    pd.DataFrame(predictions,
+                                 columns=[guide],
+                                 index=adata.obs.index))
+                if write_to_obs:
+                    adata.obs[guide + '_prediction'] = predictions
     if write_to_obsm:
-        adata.obsm['CRISPR Guide Predictions'] = pd.concat(dfs, axis=1)
+        adata.obsm[obsm_key+'_predictions'] = pd.concat(dfs, axis=1)
